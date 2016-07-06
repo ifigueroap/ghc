@@ -32,6 +32,7 @@ module CoreSyn (
         -- ** Simple 'Expr' access functions and predicates
         bindersOf, bindersOfBinds, rhssOfBind, rhssOfAlts,
         collectBinders, collectTyBinders, collectTyAndValBinders,
+        isLam,
         collectArgs, collectArgsTicks, flattenBinds,
 
         exprToType, exprToCoercion_maybe,
@@ -1655,6 +1656,13 @@ collectTyAndValBinders expr
   where
     (tvs, body1) = collectTyBinders expr
     (ids, body)  = collectValBinders body1
+
+-- | Is this a lambda (not hidden inside a cast or so)?
+-- This relates to 'collectBinders':
+-- > isLam e /= null (fst (collectBinders e))
+isLam :: CoreExpr -> Bool
+isLam (Lam _ _) = True
+isLam _         = False
 
 -- | Takes a nested application expression and returns the the function
 -- being applied and the arguments to which it is applied

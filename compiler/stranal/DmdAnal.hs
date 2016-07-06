@@ -64,8 +64,8 @@ dmdAnalTopBind :: AnalEnv
 dmdAnalTopBind sigs (NonRec id rhs)
   = (extendAnalEnv TopLevel sigs id sig, NonRec id2 rhs2)
   where
-    (  _, _, _,   rhs1) = dmdAnalRhs TopLevel Nothing sigs             id rhs
-    (sig, _, id2, rhs2) = dmdAnalRhs TopLevel Nothing (nonVirgin sigs) id rhs1
+    (  _, _, _,   rhs1) = dmdAnalRhsLetDown TopLevel Nothing sigs             id rhs
+    (sig, _, id2, rhs2) = dmdAnalRhsLetDown TopLevel Nothing (nonVirgin sigs) id rhs1
         -- Do two passes to improve CPR information
         -- See comments with ignore_cpr_info in mk_sig_ty
         -- and with extendSigsWithLam
@@ -188,7 +188,7 @@ dmdAnal' env dmd (App fun arg)
 --         , text "overall res dmd_ty =" <+> ppr (res_ty `bothDmdType` arg_ty) ])
     (res_ty `bothDmdType` arg_ty, App fun' arg')
 
--- this is an anonymous lambda, since @dmdAnalRhs@ uses @collectBinders@
+-- this is an anonymous lambda, since @dmdAnalRhsLetDown@ uses @collectBinders@
 dmdAnal' env dmd (Lam var body)
   | isTyVar var
   = let
@@ -255,10 +255,26 @@ dmdAnal' env dmd (Case scrut case_bndr ty alts)
 --                                   , text "res_ty" <+> ppr res_ty ]) $
     (res_ty, Case scrut' case_bndr' ty alts')
 
+-- The following case handle the LetUp variant of processing a let binding.
+-- This is used for a non-recursive local let without manifest lambdas.
+dmdAnal' env dmd (Let (NonRec id rhs) body)
+  | not (isLam rhs)
+  , Nothing <- unpackTrivial rhs
+      -- dmdAnalRhsLetDown treats trivial right hand sides specially
+      -- so if we have a trival right hand side, fall through to that.
+  = (final_ty, Let (NonRec id' rhs') body')
+  where
+    (body_ty, body')   = dmdAnal env dmd body
+    (body_ty', id_dmd) = findBndrDmd env notArgOfDfun body_ty id
+    id'                = setIdDemandInfo id id_dmd
+
+    (rhs_ty, rhs')     = dmdAnalStar env (dmdTransformThunkDmd rhs id_dmd) rhs
+    final_ty           = body_ty' `bothDmdType` rhs_ty
+
 dmdAnal' env dmd (Let (NonRec id rhs) body)
   = (body_ty2, Let (NonRec id2 rhs') body')
   where
-    (sig, lazy_fv, id1, rhs') = dmdAnalRhs NotTopLevel Nothing env id rhs
+    (sig, lazy_fv, id1, rhs') = dmdAnalRhsLetDown NotTopLevel Nothing env id rhs
     (body_ty, body')          = dmdAnal (extendAnalEnv NotTopLevel env id sig) dmd body
     (body_ty1, id2)           = annotateBndr env body_ty id1
     body_ty2                  = addLazyFVs body_ty1 lazy_fv
@@ -509,7 +525,7 @@ dmdFix top_lvl env orig_pairs
         my_downRhs (env, lazy_fv) (id,rhs)
           = ((env', lazy_fv'), (id', rhs'))
           where
-            (sig, lazy_fv1, id', rhs') = dmdAnalRhs top_lvl (Just bndrs) env id rhs
+            (sig, lazy_fv1, id', rhs') = dmdAnalRhsLetDown top_lvl (Just bndrs) env id rhs
             lazy_fv'                   = plusVarEnv_C bothDmd lazy_fv lazy_fv1
             env'                       = extendAnalEnv top_lvl env id sig
 
@@ -518,26 +534,42 @@ dmdFix top_lvl env orig_pairs
                         Just (sig,_) -> sig
                         Nothing      -> pprPanic "dmdFix" (ppr var)
 
--- Non-recursive bindings
-dmdAnalRhs :: TopLevelFlag
+
+-- Trivial RHS
+-- See Note [Demand analysis for trivial right-hand sides]
+dmdAnalTrivialRhs ::
+    AnalEnv -> Id -> CoreExpr -> Var ->
+    (StrictSig, VarEnv Demand, Id, CoreExpr)
+dmdAnalTrivialRhs env id rhs fn
+  = (fn_str, fn_fv, set_idStrictness env id fn_str, rhs)
+  where
+    fn_str = getStrictness env fn
+    fn_fv | isLocalId fn = unitVarEnv fn topDmd
+          | otherwise    = emptyDmdEnv
+    -- Note [Remember to demand the function itself]
+    -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    -- fn_fv: don't forget to produce a demand for fn itself
+    -- Lacking this caused Trac #9128
+    -- The demand is very conservative (topDmd), but that doesn't
+    -- matter; trivial bindings are usually inlined, so it only
+    -- kicks in for top-level bindings and NOINLINE bindings
+
+-- This implements the LetDown rule of the analysis:
+--  * assuming a demand of <L,U>
+--  * looking at the definition
+--  * determining a strictness signature
+-- It is used for toplevel definition, recursive definitions and local
+-- non-recursive definitions that have manifest lambdas.
+-- Local non-recursive definitions without a lambda are handled with LetUp.
+dmdAnalRhsLetDown :: TopLevelFlag
            -> Maybe [Id]   -- Just bs <=> recursive, Nothing <=> non-recursive
            -> AnalEnv -> Id -> CoreExpr
-           -> (StrictSig,  DmdEnv, Id, CoreExpr)
+           -> (StrictSig, DmdEnv, Id, CoreExpr)
 -- Process the RHS of the binding, add the strictness signature
 -- to the Id, and augment the environment with the signature as well.
-dmdAnalRhs top_lvl rec_flag env id rhs
+dmdAnalRhsLetDown top_lvl rec_flag env id rhs
   | Just fn <- unpackTrivial rhs   -- See Note [Demand analysis for trivial right-hand sides]
-  , let fn_str = getStrictness env fn
-        fn_fv | isLocalId fn = unitVarEnv fn topDmd
-              | otherwise    = emptyDmdEnv
-        -- Note [Remember to demand the function itself]
-        -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        -- fn_fv: don't forget to produce a demand for fn itself
-        -- Lacking this caused Trac #9128
-        -- The demand is very conservative (topDmd), but that doesn't
-        -- matter; trivial bindings are usually inlined, so it only
-        -- kicks in for top-level bindings and NOINLINE bindings
-  = (fn_str, fn_fv, set_idStrictness env id fn_str, rhs)
+  = dmdAnalTrivialRhs env id rhs fn
 
   | otherwise
   = (sig_ty, lazy_fv, id', mkLams bndrs' body')
@@ -659,7 +691,7 @@ addLazyFVs dmd_ty lazy_fvs
         -- demand with the bottom coming up from 'error'
         --
         -- I got a loop in the fixpointer without this, due to an interaction
-        -- with the lazy_fv filtering in dmdAnalRhs.  Roughly, it was
+        -- with the lazy_fv filtering in dmdAnalRhsLetDown.  Roughly, it was
         --      letrec f n x
         --          = letrec g y = x `fatbar`
         --                         letrec h z = z + ...g...
