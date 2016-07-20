@@ -238,12 +238,12 @@ data CoAxBranch
   deriving ( Data.Data, Data.Typeable )
 
 toBranchedAxiom :: CoAxiom br -> CoAxiom Branched
-toBranchedAxiom (CoAxiom unique name role tc branches implicit)
-  = CoAxiom unique name role tc (toBranched branches) implicit
+toBranchedAxiom (CoAxiom unique name _role tc branches implicit)
+  = CoAxiom unique name _role tc (toBranched branches) implicit
 
 toUnbranchedAxiom :: CoAxiom br -> CoAxiom Unbranched
-toUnbranchedAxiom (CoAxiom unique name role tc branches implicit)
-  = CoAxiom unique name role tc (toUnbranched branches) implicit
+toUnbranchedAxiom (CoAxiom unique name _role tc branches implicit)
+  = CoAxiom unique name _role tc (toUnbranched branches) implicit
 
 coAxiomNumPats :: CoAxiom br -> Int
 coAxiomNumPats = length . coAxBranchLHS . (flip coAxiomNthBranch 0)

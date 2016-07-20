@@ -221,7 +221,7 @@ lintStgAlts alts scrut_ty = do
 
       (first_ty:_tys) -> do -- mapM_ check tys
                            return (Just first_ty)
-        where
+        -- where
           -- check ty = checkTys first_ty ty (mkCaseAltMsg alts)
           -- We can't check that the alternatives have the
           -- same type, because they don't, with unsafeCoerce#
